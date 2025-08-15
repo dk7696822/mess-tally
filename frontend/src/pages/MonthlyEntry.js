@@ -4,8 +4,9 @@ import toast from "react-hot-toast";
 import ExcelJS from "exceljs";
 import { PlusIcon, TrashIcon, DocumentArrowDownIcon, CheckIcon, ChevronUpIcon, ChevronDownIcon } from "@heroicons/react/24/outline";
 import LoadingSpinner from "../components/LoadingSpinner";
+import { monthlyDataAPI } from "../utils/api";
 
-export default function MonthlyEntry() {
+export default function MonthlyEntry({ user, onLogout }) {
   const [currentPeriod, setCurrentPeriod] = useState(() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -24,6 +25,8 @@ export default function MonthlyEntry() {
   ]);
 
   const [expandedItems, setExpandedItems] = useState(new Set()); // Track which items are expanded, all collapsed by default
+  const [deleteModal, setDeleteModal] = useState({ isOpen: false, itemIndex: null, itemName: "" }); // Delete confirmation modal state
+  const [isDeleting, setIsDeleting] = useState(false); // Track delete operation state
 
   // Toggle expand/collapse for an item
   const toggleItemExpansion = (index) => {
@@ -38,23 +41,44 @@ export default function MonthlyEntry() {
     });
   };
 
-  // API base URL from environment variable
-  const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:3000";
+  // Open delete confirmation modal
+  const openDeleteModal = (index, itemName) => {
+    setDeleteModal({
+      isOpen: true,
+      itemIndex: index,
+      itemName: itemName || `Item ${index + 1}`,
+    });
+  };
+
+  // Close delete confirmation modal
+  const closeDeleteModal = () => {
+    setDeleteModal({ isOpen: false, itemIndex: null, itemName: "" });
+  };
+
+  // Confirm delete item
+  const confirmDeleteItem = async () => {
+    if (deleteModal.itemIndex !== null && !isDeleting) {
+      setIsDeleting(true);
+      await removeEntry(deleteModal.itemIndex);
+      setIsDeleting(false);
+      closeDeleteModal();
+    }
+  };
 
   // Query for loading saved data
   const { data: savedData, refetch: refetchData } = useQuery(
     ["monthly-data", currentPeriod],
     async () => {
-      const response = await fetch(`${API_BASE_URL}/api/monthly-data/${currentPeriod}`);
-      if (!response.ok) {
-        throw new Error("Failed to load data");
-      }
-      return response.json();
+      const response = await monthlyDataAPI.get(currentPeriod);
+      return response.data;
     },
     {
       enabled: !!currentPeriod,
       onError: (error) => {
         console.error("Error loading data:", error);
+        if (error.response?.status === 401) {
+          toast.error("Please log in to access this feature");
+        }
       },
     }
   );
@@ -62,22 +86,11 @@ export default function MonthlyEntry() {
   // API mutation for saving data
   const saveDataMutation = useMutation(
     async (data) => {
-      const response = await fetch(`${API_BASE_URL}/api/monthly-data`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          period: currentPeriod,
-          entries: data,
-        }),
+      const response = await monthlyDataAPI.save({
+        period: currentPeriod,
+        entries: data,
       });
-
-      if (!response.ok) {
-        throw new Error("Failed to save data");
-      }
-
-      return response.json();
+      return response.data;
     },
     {
       onSuccess: () => {
@@ -86,7 +99,12 @@ export default function MonthlyEntry() {
         refetchData();
       },
       onError: (error) => {
-        toast.error(error.message || "Failed to save data");
+        console.error("Save error:", error);
+        if (error.response?.status === 401) {
+          toast.error("Please log in to save data");
+        } else {
+          toast.error(error.response?.data?.error || "Failed to save data");
+        }
       },
     }
   );
@@ -177,21 +195,43 @@ export default function MonthlyEntry() {
     // New items remain collapsed by default - user can expand if needed
   };
 
-  const removeEntry = (index) => {
-    setEntries((prev) => prev.filter((_, i) => i !== index));
-    // Update expanded items state to account for removed item
-    setExpandedItems((prev) => {
-      const newSet = new Set();
-      prev.forEach((expandedIndex) => {
-        if (expandedIndex < index) {
-          newSet.add(expandedIndex);
-        } else if (expandedIndex > index) {
-          newSet.add(expandedIndex - 1);
-        }
-        // Skip the removed index
+  const removeEntry = async (index) => {
+    try {
+      // Remove item from local state
+      const updatedEntries = entries.filter((_, i) => i !== index);
+      setEntries(updatedEntries);
+
+      // Update expanded items state to account for removed item
+      setExpandedItems((prev) => {
+        const newSet = new Set();
+        prev.forEach((expandedIndex) => {
+          if (expandedIndex < index) {
+            newSet.add(expandedIndex);
+          } else if (expandedIndex > index) {
+            newSet.add(expandedIndex - 1);
+          }
+          // Skip the removed index
+        });
+        return newSet;
       });
-      return newSet;
-    });
+
+      // Save updated data to backend
+      await monthlyDataAPI.save({
+        period: currentPeriod,
+        entries: updatedEntries,
+      });
+
+      toast.success("Item deleted successfully!");
+
+      // Refetch data to ensure consistency
+      refetchData();
+    } catch (error) {
+      console.error("Error deleting item:", error);
+      toast.error("Failed to delete item. Please try again.");
+
+      // Revert the local state change on error
+      refetchData();
+    }
   };
 
   const onSubmit = () => {
@@ -502,22 +542,37 @@ export default function MonthlyEntry() {
               <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Mess Tally</h1>
               <p className="text-sm text-gray-600 mt-1">Monthly Inventory - {currentPeriod}</p>
             </div>
-            <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-              <button
-                onClick={exportToExcel}
-                className="inline-flex items-center justify-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-              >
-                <DocumentArrowDownIcon className="h-4 w-4 mr-2" />
-                Export Excel
-              </button>
-              <button
-                onClick={onSubmit}
-                disabled={saveDataMutation.isLoading}
-                className="inline-flex items-center justify-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
-              >
-                {saveDataMutation.isLoading ? <LoadingSpinner size="sm" className="mr-2" /> : <CheckIcon className="h-4 w-4 mr-2" />}
-                {saveDataMutation.isLoading ? "Saving..." : "Save Data"}
-              </button>
+            <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto items-start sm:items-center">
+              <div className="flex items-center gap-4 text-sm text-gray-600">
+                <span>
+                  Welcome, <strong>{user?.name}</strong>
+                </span>
+                <span className="text-gray-400">|</span>
+                <span className="capitalize">{user?.role}</span>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  onClick={exportToExcel}
+                  className="inline-flex items-center justify-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                >
+                  <DocumentArrowDownIcon className="h-4 w-4 mr-2" />
+                  Export Excel
+                </button>
+                <button
+                  onClick={onSubmit}
+                  disabled={saveDataMutation.isLoading}
+                  className="inline-flex items-center justify-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
+                >
+                  {saveDataMutation.isLoading ? <LoadingSpinner size="sm" className="mr-2" /> : <CheckIcon className="h-4 w-4 mr-2" />}
+                  {saveDataMutation.isLoading ? "Saving..." : "Save Data"}
+                </button>
+                <button
+                  onClick={onLogout}
+                  className="inline-flex items-center justify-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                >
+                  Logout
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -565,6 +620,8 @@ export default function MonthlyEntry() {
                           <option value="kg">kg</option>
                           <option value="litre">litre</option>
                           <option value="pieces">pieces</option>
+                          <option value="grams">grams</option>
+                          <option value="ml">ml</option>
                           <option value="packets">packets</option>
                         </select>
                       </div>
@@ -576,7 +633,7 @@ export default function MonthlyEntry() {
                         >
                           {isExpanded ? <ChevronUpIcon className="h-5 w-5" /> : <ChevronDownIcon className="h-5 w-5" />}
                         </button>
-                        <button onClick={() => removeEntry(index)} className="p-2 text-red-600 hover:text-red-800 focus:outline-none" title="Remove item">
+                        <button onClick={() => openDeleteModal(index, entry.itemName)} className="p-2 text-red-600 hover:text-red-800 focus:outline-none" title="Delete item">
                           <TrashIcon className="h-5 w-5" />
                         </button>
                       </div>
@@ -608,7 +665,8 @@ export default function MonthlyEntry() {
                   <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase border-r">Previous Month</th>
                   <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase border-r">Received This Month</th>
                   <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase border-r">Consumed This Month</th>
-                  <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase">Next Month Balance</th>
+                  <th className="px-4 py-2 text-center text-xs font-medium text-gray-500 uppercase border-r">Next Month Balance</th>
+                  <th className="px-2 py-3 text-center text-xs font-medium text-gray-500 uppercase">Action</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -638,6 +696,11 @@ export default function MonthlyEntry() {
                     {renderSubEntries(entry, index, "receivedThisMonth", "Received This Month")}
                     {renderSubEntries(entry, index, "consumedThisMonth", "Consumed This Month")}
                     {renderSubEntries(entry, index, "nextMonthBalance", "Next Month Balance")}
+                    <td className="px-2 py-3 text-center">
+                      <button onClick={() => openDeleteModal(index, entry.itemName)} className="p-1 text-red-600 hover:text-red-800 focus:outline-none" title="Delete item">
+                        <TrashIcon className="h-4 w-4" />
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -669,6 +732,49 @@ export default function MonthlyEntry() {
           </ul>
         </div>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {deleteModal.isOpen && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
+          <div className="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+            <div className="mt-3 text-center">
+              <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-red-100">
+                <TrashIcon className="h-6 w-6 text-red-600" />
+              </div>
+              <h3 className="text-lg font-medium text-gray-900 mt-4">Delete Item</h3>
+              <div className="mt-2 px-7 py-3">
+                <p className="text-sm text-gray-500">Are you sure you want to delete "{deleteModal.itemName}"? This action cannot be undone.</p>
+              </div>
+              <div className="flex justify-center gap-4 mt-4">
+                <button
+                  onClick={closeDeleteModal}
+                  disabled={isDeleting}
+                  className="px-4 py-2 bg-gray-300 text-gray-800 text-sm font-medium rounded-md hover:bg-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmDeleteItem}
+                  disabled={isDeleting}
+                  className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+                >
+                  {isDeleting ? (
+                    <>
+                      <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Deleting...
+                    </>
+                  ) : (
+                    "Delete"
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
