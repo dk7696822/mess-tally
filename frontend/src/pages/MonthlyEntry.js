@@ -38,11 +38,14 @@ export default function MonthlyEntry() {
     });
   };
 
+  // API base URL from environment variable
+  const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:3000";
+
   // Query for loading saved data
   const { data: savedData, refetch: refetchData } = useQuery(
     ["monthly-data", currentPeriod],
     async () => {
-      const response = await fetch(`/api/monthly-data/${currentPeriod}`);
+      const response = await fetch(`${API_BASE_URL}/api/monthly-data/${currentPeriod}`);
       if (!response.ok) {
         throw new Error("Failed to load data");
       }
@@ -59,7 +62,7 @@ export default function MonthlyEntry() {
   // API mutation for saving data
   const saveDataMutation = useMutation(
     async (data) => {
-      const response = await fetch("/api/monthly-data", {
+      const response = await fetch(`${API_BASE_URL}/api/monthly-data`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
